@@ -1,0 +1,170 @@
+```python
+def lb_cand(blocks, n):
+    if not blocks:
+        return 0
+    AT = (0, 1, 3, 7, 12, 19, 28)  # proven A062714 values a(0)..a(6)
+
+    # --- symbol-connectivity groups (pairwise-disjoint referenced masks) ---
+    groups = []
+    for b in blocks:
+        s, r = b
+        bm = (1 << s) | r
+        gl = [b]
+        rest = []
+        for m0, l0 in groups:
+            if m0 & bm:
+                bm |= m0
+                gl.extend(l0)
+            else:
+                rest.append((m0, l0))
+        rest.append((bm, gl))
+        groups = rest
+
+    total = 0
+    for gref, gl in groups:
+        best = gref.bit_count()  # every referenced symbol appears at least once
+
+        heads = {}   # head symbol -> [union of rests, [(|r|, r), ...]]
+        by_u = {}    # exact universe mask -> bitmask of head symbols
+        t1 = t2 = t3 = t4 = None  # top-4 blocks by rest size (stable order)
+        for s, r in gl:
+            kb = r.bit_count()
+            h = heads.get(s)
+            if h is None:
+                heads[s] = [r, [(kb, r)]]
+            else:
+                h[0] |= r
+                h[1].append((kb, r))
+            u = (1 << s) | r
+            hm = by_u.get(u)
+            by_u[u] = (1 << s) if hm is None else (hm | (1 << s))
+            if t1 is None or kb > t1[0]:
+                t1, t2, t3, t4 = (kb, s, r), t1, t2, t3
+            elif t2 is None or kb > t2[0]:
+                t2, t3, t4 = (kb, s, r), t2, t3
+            elif t3 is None or kb > t3[0]:
+                t3, t4 = (kb, s, r), t3
+            elif t4 is None or kb > t4[0]:
+                t4 = (kb, s, r)
+
+        # per-head term: every embedding of s-suffixes uses an s at/after the
+        # first s, so after the first s the completion must hold all perms of
+        # each rest of head s: 1 + max_i(A(|r_i|) + |U\r_i|) + one per extra
+        # referenced symbol outside {s}|U (all counted positions distinct).
+        hlist = []
+        for s, hd in heads.items():
+            ur = hd[0]
+            uni = (1 << s) | ur
+            extras = (gref & ~uni).bit_count()
+            inner = 0
+            for kb, r in hd[1]:
+                if kb < n:
+                    a = AT[kb] if kb < 7 else 2 * kb - 1
+                else:
+                    a = kb
+                v = a + (ur & ~r).bit_count()
+                if v > inner:
+                    inner = v
+            v = 1 + inner + extras
+            if v > best:
+                best = v
+            hlist.append((inner, uni))
+
+        nh = len(hlist)
+        if nh > 1:
+            # multi-head chain: any j distinct heads have j distinct first
+            # occurrences at/before the latest one p; whichever head owns p
+            # still needs its full per-head inner strictly after p. Sorted
+            # descending by inner, the j-th inner is a valid min over the
+            # chosen set: j + inner_j + one per referenced symbol outside
+            # every chosen universe (all counted positions distinct).
+            hlist.sort(reverse=True)
+            cum = 0
+            j = 0
+            for inner, uni in hlist:
+                cum |= uni
+                j += 1
+                if j > 1:
+                    v = j + inner + (gref & ~cum).bit_count()
+                    if v > best:
+                        best = v
+            # symbol-disjoint head packing: 1 + inner counts only positions
+            # of symbols inside that head's universe, so certificates over
+            # pairwise-disjoint universes add up (restriction argument);
+            # leftover referenced symbols count once each.
+            hp = []
+            for inner, uni in hlist:
+                g = 1 + inner
+                w = uni.bit_count()
+                if g > w:
+                    hp.append((g - w, g, uni))
+            if len(hp) > 1:
+                hp.sort(reverse=True)
+                used = 0
+                tot = 0
+                for _d, g, uni in hp:
+                    if not (uni & used):
+                        used |= uni
+                        tot += g
+                v = tot + (gref & ~used).bit_count()
+                if v > best:
+                    best = v
+
+        # universe terms: m heads sharing exact universe u. The m distinct
+        # first-occurrences all lie at/before the latest one p; after p all
+        # perms of that head's rest (size >= k-1) must embed: m + A(k-1).
+        # If all k symbols of u are heads, all perms of u are pending: A(k).
+        for u, hm in by_u.items():
+            k = u.bit_count()
+            m = hm.bit_count()
+            ex = (gref & ~u).bit_count()
+            km = k - 1
+            a1 = AT[km] if km < 7 else 2 * km - 1
+            v = m + a1 + ex
+            if v > best:
+                best = v
+            if m == k and k < n:
+                ak = AT[k] if k < 7 else 2 * k - 1
+                v = ak + ex
+                if v > best:
+                    best = v
+
+        # pair-SCS over top-4 blocks (shared symbols opposed), plus one per
+        # referenced symbol outside the pair's alphabet; skip DP when even
+        # len(x)+len(y)+extras cannot beat current best.
+        cands = [t for t in (t1, t2, t3, t4) if t is not None]
+        nc = len(cands)
+        if nc >= 2:
+            for i in range(nc - 1):
+                k1, s1, r1 = cands[i]
+                for j2 in range(i + 1, nc):
+                    k2, s2, r2 = cands[j2]
+                    u12 = (1 << s1) | r1 | (1 << s2) | r2
+                    ex = (gref & ~u12).bit_count()
+                    if 2 + k1 + k2 + ex <= best:
+                        continue
+                    shared = r1 & r2
+                    sh = [t for t in range(n) if shared >> t & 1]
+                    x = [s1] + sh + [t for t in range(n) if (r1 & ~shared) >> t & 1]
+                    sh.reverse()
+                    y = [s2] + sh + [t for t in range(n) if (r2 & ~shared) >> t & 1]
+                    ly = len(y)
+                    prev = [0] * (ly + 1)
+                    for a_ in x:
+                        cur = [0] * (ly + 1)
+                        c = 0
+                        for jj in range(1, ly + 1):
+                            if a_ == y[jj - 1]:
+                                c = prev[jj - 1] + 1
+                            else:
+                                pj = prev[jj]
+                                if pj > c:
+                                    c = pj
+                            cur[jj] = c
+                        prev = cur
+                    v = len(x) + ly - prev[ly] + ex
+                    if v > best:
+                        best = v
+        total += best
+    return total
+```

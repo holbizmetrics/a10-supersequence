@@ -1,0 +1,105 @@
+The candidate runs under curated builtins only, so I've inlined the proven Newey values and the SCS helper. The semantics (from `proofmachine_v2.advance`) support a new admissible term the champion misses: every head must be emitted at least once, and the *last-first-emitted* head's block still owes `1 + a(|r|)` after its first emission — so for the top-j heads by strength, `j + min(after-cost)` is a valid count of disjoint positions. At the n=6 root this lifts the bound from 20 to 25 (truth 28), which prunes whole shallow subtrees. I also made the B1 term, pair-SCS term, and universe term group-local with an outside-symbols additive credit (the exact additivity argument already proven for B2), and summed per group.
+
+Hand-checked against truth on the n=3 root (6 ≤ 7), n=4/5/6 roots (11 ≤ 12, 17 ≤ 19, 25 ≤ 28), and several small mixed states where it lands exactly on the true completion length without exceeding it.
+
+```python
+_A = {1: 1, 2: 3, 3: 7, 4: 12, 5: 19, 6: 28, 7: 39}  # Newey, literature-proven only
+
+
+def _scs(t1, t2):
+    # exact SCS length of two short tuples (row DP)
+    l2 = len(t2)
+    dp = [0] * (l2 + 1)
+    for i in range(len(t1) - 1, -1, -1):
+        new = [0] * (l2 + 1)
+        for j in range(l2 - 1, -1, -1):
+            if t1[i] == t2[j]:
+                new[j] = dp[j + 1] + 1
+            else:
+                a = dp[j]
+                b = new[j + 1]
+                new[j] = a if a >= b else b
+        dp = new
+    return len(t1) + l2 - dp[0]
+
+
+def lb_cand(blocks, n):
+    if not blocks:
+        return 0
+    # ---- connected components by symbol overlap (component sets are order-independent)
+    groups = []
+    for b in blocks:
+        s, r = b
+        bm = (1 << s) | r
+        mlist = [b]
+        rest = []
+        for gm, gl in groups:
+            if gm & bm:
+                bm |= gm
+                mlist.extend(gl)
+            else:
+                rest.append((gm, gl))
+        groups = rest
+        groups.append((bm, mlist))
+
+    total = 0
+    for gref, gl in groups:
+        heads_mask = 0
+        info = []
+        for s, r in gl:
+            k = bin(r).count("1")
+            aval = _A[k] if (k < n and k in _A) else k  # k<n: no circularity at the frontier
+            heads_mask |= 1 << s
+            info.append((s, r, k, aval, (1 << s) | r))
+        # every referenced symbol occupies >= 1 position
+        best = bin(gref).count("1")
+        # B1 + group-local outside: block (s,R) => 1 + a(|R|) positions inside {s}|R,
+        # plus one position per referenced symbol outside {s}|R (disjoint alphabets)
+        per_head = {}
+        for s, r, k, aval, u in info:
+            t = 1 + aval + bin(gref & ~u).count("1")
+            if t > best:
+                best = t
+            # w(s): after-cost of head s with outside restricted to non-head symbols
+            w = aval + bin(gref & ~(heads_mask | u)).count("1")
+            ph = per_head.get(s)
+            if ph is None or w > ph:
+                per_head[s] = w
+        # HEAD STAIRCASE: every head must be emitted; among any j heads, the one whose first
+        # emission comes last has the other j-1 first-emissions strictly before it (j distinct
+        # positions, including its own), and after that first emission its block still owes
+        # a(|r|) positions on r-symbols plus 1 per referenced non-head symbol outside {s}|r —
+        # all three position sets disjoint (heads / after-region r-symbols / other symbols).
+        # The last head is unknown => min over the chosen j; maximize via top-j prefixes.
+        ws = sorted(per_head.values(), reverse=True)
+        for j, w in enumerate(ws):
+            t = j + 1 + w
+            if t > best:
+                best = t
+        # pair-SCS (top 2 rests, shared symbols in opposite orders) + group-local outside
+        if len(info) >= 2:
+            big = sorted(info, key=lambda e: (-e[2], e[0], e[1]))[:2]
+            (s1, r1, k1, a1, u1), (s2, r2, k2, a2, u2) = big
+            shared = r1 & r2
+            sh = [t for t in range(n) if shared & (1 << t)]
+            o1 = [t for t in range(n) if (r1 & ~shared) & (1 << t)]
+            o2 = [t for t in range(n) if (r2 & ~shared) & (1 << t)]
+            v = _scs((s1,) + tuple(sh) + tuple(o1),
+                     (s2,) + tuple(reversed(sh)) + tuple(o2))
+            v += bin(gref & ~(u1 | u2)).count("1")
+            if v > best:
+                best = v
+        # complete-universe term, group-local: all |u| symbols head blocks with universe u
+        # => suffix complete over u => a(|u|) positions inside u, + outside referenced
+        by_u = {}
+        for s, r, k, aval, u in info:
+            by_u.setdefault(u, set()).add(s)
+        for u, ss in by_u.items():
+            k = bin(u).count("1")
+            if k < n and k in _A and len(ss) == k:
+                v = _A[k] + bin(gref & ~u).count("1")
+                if v > best:
+                    best = v
+        total += best
+    return total
+```

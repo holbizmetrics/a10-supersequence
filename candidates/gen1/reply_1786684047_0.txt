@@ -1,0 +1,113 @@
+```python
+def lb_cand(blocks, n):
+    # Strengthened v3: same certified ingredients (per-block closure 1+A(k),
+    # complete-universe closure A(k), adversarial pair-SCS, disjoint-alphabet
+    # additivity, referenced-symbol counting) recombined additively:
+    # every term is topped up with a greedy chain of OTHER blocks whose
+    # universes are pairwise disjoint from it (their witnesses occupy
+    # disjoint position sets), plus +1 per leftover referenced symbol.
+    # Pointwise >= gen-0 champion; pair DP is guarded so it runs less often.
+    if not blocks:
+        return 0
+    AP = (0, 1, 3, 7, 12, 19)  # proven A062714 values, index = alphabet size
+
+    # symbol-connectivity groups (same merge order as gen-0)
+    groups = []
+    for b in blocks:
+        bm = (1 << b[0]) | b[1]
+        gl = [b]
+        rest = []
+        for m, l in groups:
+            if m & bm:
+                bm |= m
+                gl.extend(l)
+            else:
+                rest.append((m, l))
+        rest.append((bm, gl))
+        groups = rest
+
+    def chain(acc, taken, bs, gm):
+        # add block terms with universes disjoint from `taken` and each other,
+        # then +1 per remaining referenced symbol of the group
+        for v, u in bs:
+            if not (taken & u):
+                acc += v
+                taken |= u
+        return acc + bin(gm & ~taken).count("1")
+
+    total = 0
+    for gmask, gl in groups:
+        best = bin(gmask).count("1")
+        if len(gl) == 1:
+            s, r = gl[0]
+            k = bin(r).count("1")
+            a = AP[k] if (k < n and k < 6) else k
+            v = 1 + a + bin(gmask & ~((1 << s) | r)).count("1")
+            if v > best:
+                best = v
+            total += best
+            continue
+
+        bs = []
+        by_u = {}
+        for s, r in gl:
+            k = bin(r).count("1")
+            u = (1 << s) | r
+            a = AP[k] if (k < n and k < 6) else k
+            bs.append((1 + a, u))
+            by_u[u] = by_u.get(u, 0) | (1 << s)
+        bs.sort(reverse=True)
+
+        v = chain(0, 0, bs, gmask)
+        if v > best:
+            best = v
+
+        # complete-universe closure terms (all |u| heads present over u)
+        for u, sm in by_u.items():
+            uk = bin(u).count("1")
+            if uk < n and uk < 6 and bin(sm).count("1") == uk:
+                v = chain(AP[uk], u, bs, gmask)
+                if v > best:
+                    best = v
+
+        # pair-SCS among the 3 biggest blocks (adversarial shared ordering)
+        big = sorted(gl, key=lambda b: -bin(b[1]).count("1"))[:3]
+        nb = len(big)
+        for i in range(nb - 1):
+            s1, r1 = big[i]
+            u1 = (1 << s1) | r1
+            la = 1 + bin(r1).count("1")
+            for j in range(i + 1, nb):
+                s2, r2 = big[j]
+                u2 = (1 << s2) | r2
+                lb2 = 1 + bin(r2).count("1")
+                c2 = chain(0, u1 | u2, bs, gmask)
+                if la + lb2 + c2 <= best:
+                    continue  # even SCS upper bound cannot beat current best
+                if u1 & u2 == 0:
+                    v = la + lb2 + c2  # disjoint alphabets: SCS is exact
+                else:
+                    shared = r1 & r2
+                    sh = [t for t in range(n) if shared >> t & 1]
+                    A = [s1] + sh + [t for t in range(n) if (r1 & ~shared) >> t & 1]
+                    sh.reverse()
+                    B = [s2] + sh + [t for t in range(n) if (r2 & ~shared) >> t & 1]
+                    prev = [0] * (lb2 + 1)
+                    for ax in A:
+                        cur = [0]
+                        cy = 0
+                        for y in range(1, lb2 + 1):
+                            if ax == B[y - 1]:
+                                cy = prev[y - 1] + 1
+                            else:
+                                p = prev[y]
+                                if p > cy:
+                                    cy = p
+                            cur.append(cy)
+                        prev = cur
+                    v = la + lb2 - prev[lb2] + c2
+                if v > best:
+                    best = v
+        total += best
+    return total
+```
